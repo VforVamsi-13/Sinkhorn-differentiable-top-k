@@ -1,0 +1,87 @@
+'''
+A square matrix A of size n × n is fully indecomposable (or has the strong Hall property) if there do not exist subsets of indices E and F of size m and n - m (with 0 < m < n) such that all entries \(a_{i,j} = 0\) for i ∈ E and j ∈ F. In simpler terms, A cannot be permuted into a block upper-triangular form, nor does it contain an s × (n-s) zero submatrix positioned such that it splits the matrix decomposably
+'''
+
+"""
+
+Powers of the Matrix become Strictly Positive
+
+If \(A\) is a non-negative, fully indecomposable matrix, then \(A^{n-1}\) is strictly positive (\(>0\)), provided the main diagonal contains no structural zeros that prevent matching. More broadly, if \(A\) is fully indecomposable, then the matrix product of its skeleton pattern spreads non-zeros faster than a standard irreducible matrix.
+
+3. Bipartite Graph Connectivity
+
+For non-negative matrices, you can map the matrix to a bipartite graph where an edge exists if \(a_{i,j} > 0\). The matrix is fully indecomposable if and only if this bipartite graph has a perfect matching, and the directed graph obtained by orienting matching edges one way and non-matching edges the other way is strongly connected.
+"""
+
+def is_fully_indecomposable(A):
+    """True iff A has total support and its bipartite
+    support graph is connected.
+    """
+    A = _validate_matrix(A)
+    n = A.shape[0]
+
+    if not has_total_support(A):
+        return False
+
+    S = A > 0
+
+    # Graph vertices: rows 0..n-1, columns n..2n-1.
+    adjacency = [[] for _ in range(2 * n)]
+
+    for i, j in zip(*np.nonzero(S)):
+        col_vertex = n + j
+        adjacency[i].append(col_vertex)
+        adjacency[col_vertex].append(i)
+
+    visited = {0}
+    stack = [0]
+
+    while stack:
+        vertex = stack.pop()
+
+        for neighbor in adjacency[vertex]:
+            if neighbor not in visited:
+                visited.add(neighbor)
+                stack.append(neighbor)
+
+    return len(visited) == 2 * n
+
+
+
+import numpy as np
+import networkx as nx
+from scipy.optimize import linear_sum_assignment
+
+def is_fully_indecomposable(matrix):
+    n = matrix.shape[0]
+    # 1. Check for a total support / perfect matching (Transversal)
+    # We look for non-zero elements. Cost matrix is 0 for non-zero, 1 for zero.
+    cost_matrix = np.where(matrix > 0, 0, 1)
+    row_ind, col_ind = linear_sum_assignment(cost_matrix)
+    
+    # If the max matching includes any zero entries, it doesn't have a full transversal
+    if any(matrix[r, c] == 0 for r, c in zip(row_ind, col_ind)):
+        return False
+        
+    # 2. Build the directed graph to check for strong connectivity
+    # Matching edges go from Column -> Row. Non-matching positive edges go from Row -> Column.
+    di_gah = nx.DiGraph()
+    matching_pairs = set(zip(row_ind, col_ind))
+    
+    for r in range(n):
+        for c in range(n):
+            if matrix[r, c] > 0:
+                if (r, c) in matching_pairs:
+                    di_gah.add_edge(f"C{c}", f"R{r}") # Column to Row
+                else:
+                    di_gah.add_edge(f"R{r}", f"C{c}") # Row to Column
+                    
+    # 3. If the resulting graph is strongly connected, the matrix is fully indecomposable
+    return nx.is_strongly_connected(di_gah)
+
+# Example Usage:
+# A fully indecomposable matrix
+A = np.array([[0, 2, 0],
+              [4, 0, 1]])
+
+print("Is fully indecomposable?:", is_fully_indecomposable(A))
