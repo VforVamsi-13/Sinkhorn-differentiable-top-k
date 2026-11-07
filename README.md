@@ -29,7 +29,31 @@ This returns a matrix whose row and column sums are approximately one.
 ### 2. PyTorch Sinkhorn normalization
 
 ```bash
-python -c "import torch; from sinkhorn import sinkhorn_torch; X=torch.randn(2,4,6); Y=sinkhorn_torch(X, n_iters=50); print(Y.shape); print('row sums:', Y.sum(-1)); print('column sums:', Y.sum(-2))"
+python -c "import torch; from sinkhorn import sinkhorn_torch; X=abs(torch.randn(2,4,6)); Y=sinkhorn_torch(X, n_iters=50); print(Y.shape); print('row sums:', Y.sum(-1)); print('column sums:', Y.sum(-2))"
+```
+
+OR in IDE
+```bash
+>>> from sinkhorn import sinkhorn_torch
+>>> import numpy as np
+>>> import torch
+>>> X = torch.abs(torch.randn(4, 4))
+>>> Y = sinkhorn_torch((X),n_iters=200);
+>>> X
+tensor([[1.5850, 1.0709, 1.5036, 0.4964],
+        [1.4543, 0.8335, 0.2934, 0.4903],
+        [0.8935, 0.7083, 1.5385, 0.2009],
+        [0.0239, 0.2276, 1.1634, 1.6116]])
+>>> Y
+tensor([[0.3148, 0.2782, 0.2686, 0.1384],
+        [0.3873, 0.3076, 0.1123, 0.1928],
+        [0.2152, 0.2643, 0.3798, 0.1406],
+        [0.0827, 0.1498, 0.2392, 0.5282]])
+>>> print('row sums:', Y.sum(-1))
+row sums: tensor([1., 1., 1., 1.])
+>>> print('col sums:', Y.sum(-2))
+col sums: tensor([1., 1., 1., 1.])
+>>> 
 ```
 
 For a tensor with shape `[..., rows, columns]`, each row has mass `1` and
