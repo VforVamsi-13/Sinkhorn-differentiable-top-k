@@ -60,3 +60,19 @@ def test_input_is_not_modified():
     sinkhorn(A)
 
     assert np.array_equal(A, original)
+
+
+def test_invalid_tolerance_is_rejected():
+    with pytest.raises(ValueError):
+        sinkhorn(np.eye(2), tol=0)
+
+
+def test_non_square_matrix_is_rejected():
+    with pytest.raises(ValueError):
+        sinkhorn(np.ones((2, 3)))
+
+
+def test_singleton_matrix():
+    B, iterations = sinkhorn(np.array([[4.0]]))
+    assert np.array_equal(B, np.ones((1, 1)))
+    assert iterations == 1
