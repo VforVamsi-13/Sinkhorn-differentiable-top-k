@@ -14,36 +14,21 @@ def _validate_scores(scores: torch.Tensor, k: int) -> None:
     if not 1 <= k <= scores.shape[-1]:
         raise ValueError("k must be between one and the number of items")
 
-def soft_topk(scores: torch.Tensor, k: int, *, temperature: float = 0.1,
-              n_iters: int = 50) -> torch.Tensor:
-    """Return differentiable weights whose item mass sums to ``k`` via optimal transport.
-
-    Computes an optimal transport plan between score points and two target anchors
-    (lo and hi). Column 1 corresponds to top-k selection with target mass k / n.
-    """
+def soft_topk(scores, k, *, temperature=0.1, n_iters=50):
     _validate_scores(scores, k)
     if temperature <= 0:
         raise ValueError("temperature must be positive")
-    if n_iters < 1:
-        raise ValueError("n_iters must be at least 1")
-
     n = scores.shape[-1]
     lo = scores.amin(-1, keepdim=True)
     hi = scores.amax(-1, keepdim=True)
-    anchors = torch.stack([lo, hi], dim=-1)  # (..., 1, 2)
+    anchors = torch.stack([lo, hi], dim=-1)                       # (..., 1, 2)
     scale = (hi - lo).clamp_min(1e-8).unsqueeze(-1) ** 2
-    log_K = -((scores.unsqueeze(-1) - anchors) ** 2 / scale) / temperature  # (..., n, 2)
+    log_kernel = -((scores.unsqueeze(-1) - anchors) ** 2 / scale) / temperature  # (..., n, 2)
 
-    log_mu = -torch.log(torch.tensor(float(n), dtype=scores.dtype, device=scores.device))
-    log_nu = torch.log(torch.tensor([(n - k) / n, k / n],
-                                    dtype=scores.dtype, device=scores.device))
-    u = torch.zeros_like(scores)  # (..., n)
-    v = torch.zeros(*scores.shape[:-1], 2, dtype=scores.dtype, device=scores.device)
-    for _ in range(n_iters):
-        u = log_mu - torch.logsumexp(log_K + v.unsqueeze(-2), dim=-1)
-        v = log_nu - torch.logsumexp(log_K + u.unsqueeze(-1), dim=-2)
-    plan = (log_K + u.unsqueeze(-1) + v.unsqueeze(-2)).exp()
-    return n * plan[..., 1]
+    col_mass = torch.tensor([n - k, k], device=scores.device, dtype=scores.dtype)
+    plan = sinkhorn_torch(log_kernel, n_iters=n_iters,
+                          row_mass=1.0, column_mass=col_mass)     # (..., n, 2)
+    return plan[..., 1]                                           # in [0,1], sums to ~k
 
 
 def hard_topk(scores: torch.Tensor, k: int) -> torch.Tensor:
