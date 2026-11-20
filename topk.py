@@ -22,14 +22,12 @@ def soft_topk(scores, k, *, temperature=0.1, n_iters=50):
     lo = scores.amin(-1, keepdim=True)
     hi = scores.amax(-1, keepdim=True)
     anchors = torch.stack([lo, hi], dim=-1)                       # (..., 1, 2)
-    scale = (hi - lo).clamp_min(1e-8).unsqueeze(-1) ** 2
-    log_kernel = -((scores.unsqueeze(-1) - anchors) ** 2 / scale) / temperature  # (..., n, 2)
+    log_kernel = -((scores.unsqueeze(-1) - anchors) ** 2) / temperature   # (..., n, 2)
 
     col_mass = torch.tensor([n - k, k], device=scores.device, dtype=scores.dtype)
     plan = sinkhorn_torch(log_kernel, n_iters=n_iters,
-                          row_mass=1.0, column_mass=col_mass)     # (..., n, 2)
-    return plan[..., 1]                                           # in [0,1], sums to ~k
-
+                          row_mass=1.0, column_mass=col_mass)
+    return plan[..., 1]
 
 def hard_topk(scores: torch.Tensor, k: int) -> torch.Tensor:
     """Return a non-differentiable binary top-k mask."""
