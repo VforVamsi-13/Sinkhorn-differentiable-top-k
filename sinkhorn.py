@@ -39,15 +39,13 @@ def sinkhorn(A, tol=1e-8, max_iter=10000):
         "Sinkhorn iteration did not reach tolerance within max_iter"
     )
 
-
 def sinkhorn_torch(matrix, *, n_iters=50, epsilon=1e-8, log_domain=True):
-    """Return a differentiable tensor with compatible transport marginals.
+    """Return a differentiable tensor normalized with alternating row/column scaling.
 
-    ``matrix`` may contain arbitrary finite real scores. Scores are converted
-    to positive weights with a log-domain normalization, which avoids
-    underflow for the small temperatures commonly used by SOFT top-k. For a
-    square input both marginals are one; for a rectangular input each row has
-    mass one and each column has mass ``rows / columns``.
+    ``matrix`` must contain nonnegative or log-domain scores.
+    For square inputs, each row and column sums to 1.
+    For rectangular inputs of shape [..., rows, cols], each row has mass 1.0 and
+    each column has mass ``rows / cols``.
     """
     try:
         import torch

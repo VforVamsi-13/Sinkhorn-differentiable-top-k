@@ -16,17 +16,35 @@ def _validate_scores(scores: torch.Tensor, k: int) -> None:
 
 def soft_topk(scores: torch.Tensor, k: int, *, temperature: float = 0.1,
               n_iters: int = 50) -> torch.Tensor:
-    """Return differentiable weights whose item mass sums to ``k``."""
+    """Return differentiable weights whose item mass sums to ``k`` via optimal transport.
+
+    Computes an optimal transport plan between score points and two target anchors
+    (lo and hi). Column 1 corresponds to top-k selection with target mass k / n.
+    """
     _validate_scores(scores, k)
     if temperature <= 0:
         raise ValueError("temperature must be positive")
-    n_items = scores.shape[-1]
-    logits = (scores / temperature).unsqueeze(-2).expand(
-        *scores.shape[:-1], k, n_items
-    )
-    slots = torch.linspace(1.0, 0.0, k, device=scores.device, dtype=scores.dtype)
-    logits = logits + slots.view(*([1] * (scores.ndim - 1)), k, 1)
-    return sinkhorn_torch(logits, n_iters=n_iters).sum(dim=-2)
+    if n_iters < 1:
+        raise ValueError("n_iters must be at least 1")
+
+    n = scores.shape[-1]
+    lo = scores.amin(-1, keepdim=True)
+    hi = scores.amax(-1, keepdim=True)
+    anchors = torch.stack([lo, hi], dim=-1)  # (..., 1, 2)
+    scale = (hi - lo).clamp_min(1e-8).unsqueeze(-1) ** 2
+    log_K = -((scores.unsqueeze(-1) - anchors) ** 2 / scale) / temperature  # (..., n, 2)
+
+    log_mu = -torch.log(torch.tensor(float(n), dtype=scores.dtype, device=scores.device))
+    log_nu = torch.log(torch.tensor([(n - k) / n, k / n],
+                                    dtype=scores.dtype, device=scores.device))
+    u = torch.zeros_like(scores)  # (..., n)
+    v = torch.zeros(*scores.shape[:-1], 2, dtype=scores.dtype, device=scores.device)
+    for _ in range(n_iters):
+        u = log_mu - torch.logsumexp(log_K + v.unsqueeze(-2), dim=-1)
+        v = log_nu - torch.logsumexp(log_K + u.unsqueeze(-1), dim=-2)
+    plan = (log_K + u.unsqueeze(-1) + v.unsqueeze(-2)).exp()
+    return n * plan[..., 1]
+
 
 def hard_topk(scores: torch.Tensor, k: int) -> torch.Tensor:
     """Return a non-differentiable binary top-k mask."""
