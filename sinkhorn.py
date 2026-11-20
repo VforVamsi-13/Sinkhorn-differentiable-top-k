@@ -83,14 +83,14 @@ def sinkhorn(A, tol=1e-8, max_iter=10000):
 #     return values
 
 def sinkhorn_torch(matrix, *, n_iters=50, epsilon=1e-8, log_domain=True,
-                   row_mass=None, column_mass=None):
+                   row_mass=None, column_mass=None,
+                   tol=1e-4, check_every=10):
     """Sinkhorn scaling with arbitrary marginals, computed in log space.
 
-    ``matrix`` is a log-kernel when ``log_domain`` is True, otherwise a
-    positive kernel. ``row_mass`` / ``column_mass`` may be a float or a tensor
-    broadcastable to (..., rows) / (..., columns). Defaults: rows 1, columns
-    rows/columns. The returned plan has row sums = row_mass; column sums
-    match column_mass up to convergence error.
+    ``n_iters`` is now a maximum. Every ``check_every`` iterations the
+    relative column-marginal error is measured, and the loop stops once it
+    is below ``tol`` for the whole batch. Pass ``tol=None`` to always run
+    all ``n_iters``.
     """
     import torch
 
@@ -98,6 +98,10 @@ def sinkhorn_torch(matrix, *, n_iters=50, epsilon=1e-8, log_domain=True,
         raise ValueError("matrix must have at least two dimensions")
     if n_iters < 1 or epsilon <= 0:
         raise ValueError("n_iters must be positive and epsilon must be positive")
+    if tol is not None and tol <= 0:
+        raise ValueError("tol must be positive or None")
+    if check_every < 1:
+        raise ValueError("check_every must be at least 1")
     if not torch.is_floating_point(matrix):
         matrix = matrix.float()
     if not torch.isfinite(matrix).all():
@@ -114,11 +118,20 @@ def sinkhorn_torch(matrix, *, n_iters=50, epsilon=1e-8, log_domain=True,
         mass = mass.expand(*matrix.shape[:-2], size) if mass.ndim == 0 else mass
         return mass.clamp_min(epsilon).log()
 
-    log_r = _log_mass(row_mass, rows).unsqueeze(-1)      # (..., rows, 1)
+    log_r = _log_mass(row_mass, rows).unsqueeze(-1)        # (..., rows, 1)
     log_c = _log_mass(column_mass, columns).unsqueeze(-2)  # (..., 1, columns)
 
     log_p = matrix if log_domain else matrix.clamp_min(epsilon).log()
-    for _ in range(n_iters):
+    for i in range(n_iters):
         log_p = log_p - torch.logsumexp(log_p, dim=-2, keepdim=True) + log_c
         log_p = log_p - torch.logsumexp(log_p, dim=-1, keepdim=True) + log_r
+
+        if tol is not None and (i + 1) % check_every == 0:
+            with torch.no_grad():
+                # Rows are exact after the row step, so only columns can be off.
+                col_sums = torch.logsumexp(log_p, dim=-2, keepdim=True).exp()
+                target = log_c.exp()
+                err = ((col_sums - target).abs() / target).max()
+            if err < tol:
+                break
     return log_p.exp()
