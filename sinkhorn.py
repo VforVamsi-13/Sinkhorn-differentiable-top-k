@@ -82,56 +82,180 @@ def sinkhorn(A, tol=1e-8, max_iter=10000):
 #         values = values * column_mass
 #     return values
 
-def sinkhorn_torch(matrix, *, n_iters=50, epsilon=1e-8, log_domain=True,
-                   row_mass=None, column_mass=None,
-                   tol=1e-4, check_every=10):
-    """Sinkhorn scaling with arbitrary marginals, computed in log space.
 
-    ``n_iters`` is now a maximum. Every ``check_every`` iterations the
-    relative column-marginal error is measured, and the loop stops once it
-    is below ``tol`` for the whole batch. Pass ``tol=None`` to always run
-    all ``n_iters``.
+def _prepare_marginal(mass, batch_shape, size, *, device, dtype, name):
+    """Convert a marginal to shape [..., size] and validate it."""
+    import torch
+
+    mass = torch.as_tensor(mass, device=device, dtype=dtype)
+
+    try:
+        mass = torch.broadcast_to(mass, (*batch_shape, size))
+    except RuntimeError as exc:
+        raise ValueError(
+            f"{name} must be broadcastable to shape "
+            f"{(*batch_shape, size)}"
+        ) from exc
+
+    if not torch.isfinite(mass).all():
+        raise ValueError(f"{name} must contain only finite values")
+
+    if (mass < 0).any():
+        raise ValueError(f"{name} must be nonnegative")
+
+    return mass
+
+
+def marginal_errors(plan, row_mass=None, column_mass=None):
+    """Return maximum absolute row and column marginal errors."""
+    import torch
+
+    if plan.ndim < 2:
+        raise ValueError("plan must have at least two dimensions")
+
+    rows, columns = plan.shape[-2:]
+    batch_shape = plan.shape[:-2]
+
+    if row_mass is None:
+        row_mass = 1.0
+
+    if column_mass is None:
+        column_mass = rows / columns
+
+    r = _prepare_marginal(
+        row_mass, batch_shape, rows,
+        device=plan.device, dtype=plan.dtype, name="row_mass"
+    )
+    c = _prepare_marginal(
+        column_mass, batch_shape, columns,
+        device=plan.device, dtype=plan.dtype, name="column_mass"
+    )
+
+    row_error = (plan.sum(dim=-1) - r).abs().amax()
+    column_error = (plan.sum(dim=-2) - c).abs().amax()
+
+    return row_error, column_error
+
+
+def sinkhorn_torch(
+    matrix,
+    *,
+    n_iters=50,
+    epsilon=1e-8,
+    log_domain=True,
+    row_mass=None,
+    column_mass=None,
+):
+    """Compute an entropy-regularized transport plan using Sinkhorn scaling.
+
+    Args:
+        matrix:
+            Log-kernel if log_domain=True; strictly positive kernel otherwise.
+            Shape [..., rows, columns].
+        n_iters:
+            Number of alternating normalization iterations.
+        epsilon:
+            Absolute tolerance used when checking total marginal mass.
+        log_domain:
+            Whether matrix contains log-kernel values.
+        row_mass:
+            Desired row sums. Defaults to 1 for every row.
+        column_mass:
+            Desired column sums. Defaults to rows / columns.
+
+    Returns:
+        Transport plan with the requested marginals up to numerical
+        convergence error.
     """
     import torch
 
     if matrix.ndim < 2:
         raise ValueError("matrix must have at least two dimensions")
-    if n_iters < 1 or epsilon <= 0:
-        raise ValueError("n_iters must be positive and epsilon must be positive")
-    if tol is not None and tol <= 0:
-        raise ValueError("tol must be positive or None")
-    if check_every < 1:
-        raise ValueError("check_every must be at least 1")
+
+    if n_iters < 1:
+        raise ValueError("n_iters must be at least one")
+
+    if epsilon <= 0:
+        raise ValueError("epsilon must be positive")
+
     if not torch.is_floating_point(matrix):
         matrix = matrix.float()
+
     if not torch.isfinite(matrix).all():
         raise ValueError("matrix must contain only finite values")
 
     rows, columns = matrix.shape[-2:]
+    batch_shape = matrix.shape[:-2]
+
     if row_mass is None:
         row_mass = 1.0
+
     if column_mass is None:
         column_mass = rows / columns
 
-    def _log_mass(mass, size):
-        mass = torch.as_tensor(mass, device=matrix.device, dtype=matrix.dtype)
-        mass = mass.expand(*matrix.shape[:-2], size) if mass.ndim == 0 else mass
-        return mass.clamp_min(epsilon).log()
+    r = _prepare_marginal(
+        row_mass, batch_shape, rows,
+        device=matrix.device, dtype=matrix.dtype, name="row_mass"
+    )
+    c = _prepare_marginal(
+        column_mass, batch_shape, columns,
+        device=matrix.device, dtype=matrix.dtype, name="column_mass"
+    )
 
-    log_r = _log_mass(row_mass, rows).unsqueeze(-1)        # (..., rows, 1)
-    log_c = _log_mass(column_mass, columns).unsqueeze(-2)  # (..., 1, columns)
+    # Both marginals must describe the same total transported mass.
+    total_r = r.sum(dim=-1)
+    total_c = c.sum(dim=-1)
 
-    log_p = matrix if log_domain else matrix.clamp_min(epsilon).log()
-    for i in range(n_iters):
-        log_p = log_p - torch.logsumexp(log_p, dim=-2, keepdim=True) + log_c
-        log_p = log_p - torch.logsumexp(log_p, dim=-1, keepdim=True) + log_r
+    if not torch.allclose(
+        total_r, total_c, atol=epsilon, rtol=1e-5
+    ):
+        raise ValueError(
+            "row_mass and column_mass must have equal total mass"
+        )
 
-        if tol is not None and (i + 1) % check_every == 0:
-            with torch.no_grad():
-                # Rows are exact after the row step, so only columns can be off.
-                col_sums = torch.logsumexp(log_p, dim=-2, keepdim=True).exp()
-                target = log_c.exp()
-                err = ((col_sums - target).abs() / target).max()
-            if err < tol:
-                break
-    return log_p.exp()
+    if (total_r <= 0).any():
+        raise ValueError("total marginal mass must be positive")
+
+    if log_domain:
+        log_kernel = matrix
+    else:
+        if (matrix <= 0).any():
+            raise ValueError(
+                "matrix must be strictly positive when log_domain=False"
+            )
+        log_kernel = matrix.log()
+
+    # Represent zero marginal entries as -inf in log space.
+    # This preserves exact zeros instead of replacing them with epsilon.
+    log_r = torch.where(
+        r > 0, r.log(), torch.full_like(r, -torch.inf)
+    ).unsqueeze(-1)
+
+    log_c = torch.where(
+        c > 0, c.log(), torch.full_like(c, -torch.inf)
+    ).unsqueeze(-2)
+
+    log_u = torch.zeros_like(log_r)
+    log_v = torch.zeros_like(log_c)
+
+    # Alternating updates of row and column scaling potentials.
+    for _ in range(n_iters):
+        row_lse = torch.logsumexp(
+            log_kernel + log_v, dim=-1, keepdim=True
+        )
+        log_u = torch.where(
+            r.unsqueeze(-1) > 0,
+            log_r - row_lse,
+            torch.full_like(log_r, -torch.inf),
+        )
+
+        column_lse = torch.logsumexp(
+            log_kernel + log_u, dim=-2, keepdim=True
+        )
+        log_v = torch.where(
+            c.unsqueeze(-2) > 0,
+            log_c - column_lse,
+            torch.full_like(log_c, -torch.inf),
+        )
+
+    return (log_kernel + log_u + log_v).exp()
