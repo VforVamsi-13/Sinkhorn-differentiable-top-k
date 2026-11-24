@@ -1,7 +1,7 @@
 """Numerically stable Sinkhorn normalization for NumPy and PyTorch."""
 
 import numpy as np
-
+import torch
 
 def sinkhorn(A, tol=1e-8, max_iter=10000):
     """Alternately normalize a nonnegative square matrix.
@@ -85,7 +85,6 @@ def sinkhorn(A, tol=1e-8, max_iter=10000):
 
 def _prepare_marginal(mass, batch_shape, size, *, device, dtype, name):
     """Convert a marginal to shape [..., size] and validate it."""
-    import torch
 
     mass = torch.as_tensor(mass, device=device, dtype=dtype)
 
@@ -108,7 +107,6 @@ def _prepare_marginal(mass, batch_shape, size, *, device, dtype, name):
 
 def marginal_errors(plan, row_mass=None, column_mass=None):
     """Return maximum absolute row and column marginal errors."""
-    import torch
 
     if plan.ndim < 2:
         raise ValueError("plan must have at least two dimensions")
@@ -167,7 +165,7 @@ def sinkhorn_torch(
         Transport plan with the requested marginals up to numerical
         convergence error.
     """
-    import torch
+   
 
     if matrix.ndim < 2:
         raise ValueError("matrix must have at least two dimensions")
